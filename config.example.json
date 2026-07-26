@@ -1,37 +1,37 @@
 {
+  "_comment": "allowed_genres = শুধু এই keyword-gulo থাকা genre-ই process করবে (substring, case-insensitive). Empty = blocklist mode.",
   "portals": [
     {
       "name": "tatatv",
       "url": "http://tatatv.cc/stalker_portal/c/",
       "mac": "00:1A:79:00:8C:32",
-      "proxy": "socks5h://test:test@203.96.226.98:1088",
-      "epg_id_prefix": "in."
+      "proxies": [],
+      "epg_id_prefix": "",
+      "allowed_genres": ["BANGLA","BENGALI","HINDI","CRICKET","SPORTS","4K"]
+    },
+    {
+      "name": "jiotv",
+      "url": "http://jiotv.be/stalker_portal/c",
+      "mac": "00:1A:79:E6:6E:90",
+      "proxies": [],
+      "epg_id_prefix": "",
+      "allowed_genres": ["BANGLA","BENGALI","HINDI","CRICKET","SPORTS","4K"]
     }
   ],
   "epg_sources": [
-    "https://epg.pw/xmltv/epg_in.xml.gz"
+    "https://www.open-epg.com/files/india.xml.gz",
+    "https://avkb.short.gy/epg.xml.gz",
+    "https://epgshare01.online/epgshare01/epg_ripper_IN1.xml.gz"
   ],
-  "favorites": {
-    "Bangla_Trending": [
-      "ZEE BANGLA 4K",
-      "STAR JALSHA HD",
-      "COLORS BANGLA HD",
-      "AAKAASH AATH",
-      "SONY AATH",
-      "BANGLA TOP 10",
-      "BANGLA - TV"
-    ],
-    "Sports": [
-      "STAR SPORTS 1 HD",
-      "STAR SPORTS SELECT 1",
-      "SONY SPORTS TEN 1",
-      "SPORTS - CRICKET"
-    ]
+  "aliases": {
+    "STAR JALSHA MOVIES HD": {"id": "StarJalshaMovies.in", "logo": "https://images.open-epg.com/x1882.png"},
+    "ANANDA TV BANGLA HD":   {"id": "AnandaTV.in", "logo": ""},
+    "&TV HD":                {"id": "AndTV.in",    "logo": "https://images.open-epg.com/x1758.png"},
+    "&TV":                   {"id": "AndTV.in",    "logo": "https://images.open-epg.com/x1758.png"},
+    "SONY ENTERTAINMENT TELEVISION HD": {"id": "SET.in", "logo": "https://images.open-epg.com/x1152.png"}
   },
-  "output": {
-    "vlc_m3u": true,
-    "m3u8_hls": true,
-    "json_metadata": true,
-    "index_html": true
+  "favorites": {
+    "Bangla_Trending": ["ZEE BANGLA 4K", "STAR JALSHA HD", "COLORS BANGLA HD", "AAKAASH AATH", "SONY AATH", "STAR JALSHA MOVIES HD", "ZEE BANGLA CINEMA"],
+    "Sports": ["STAR SPORTS 1 HD", "STAR SPORTS SELECT 1", "SONY SPORTS TEN 1", "SPORTS - CRICKET", "CRICKET"]
   }
 }

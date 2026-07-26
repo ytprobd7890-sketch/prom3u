@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: tata-iptv
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    numInstances: 1
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: MAX_WORKERS
+        value: "10"
+      - key: SOCKS_PROXY
+        sync: false
+      - key: GENRE_BLOCK
+        value: "NEWS,TAMIL,TELUGU,MALAYALAM,KANNADA,MARATHI,GUJARATI,PUNJABI,URDU,FRENCH,ARABIC,FILIPINO,CARIBBEAN"
+      - key: CACHE_TTL
+        value: "480"
+      - key: PLAYLIST_BASE_URL
+        value: ""    # set to your Render service URL AFTER first deploy, e.g. https://tata-iptv.onrender.com
+                     # setting this makes all stream URLs stable /w/... links that never expire
+    autoDeploy: true
