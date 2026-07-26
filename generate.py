@@ -407,49 +407,116 @@ class StalkerClient:
         s.mount("http://", adapter); s.mount("https://", adapter)
         return s
 
-    def _do(self, url, tries=3):
-        last = None
-        s = self.session
-        s.headers.update(self.auth_headers); s.cookies.update(self.auth_cookies)
-        # Inject Bearer token for authenticated calls
-        if getattr(self, "token", None):
-            s.headers["Authorization"] = f"Bearer {self.token}"
-        for i in range(tries):
-            try:
-                r = s.get(url, timeout=TIMEOUT)
-                if r.status_code == 200:
-                    try: return r.json()
-                    except Exception: return r
-                if r.status_code in (401, 403):
-                    # token may have expired; re-handshake once and retry
-                    if i == 0:
-                        try: self._handshake()
-                        except Exception: pass
-                        s = self.session
-                        s.headers.update(self.auth_headers); s.cookies.update(self.auth_cookies)
-                        continue
-                    return r  # fall through
-            except Exception as e:
-                last = e; time.sleep(0.3*(i+1))
-        raise ConnectionError(f"All connection attempts failed for {url}: {last}")
-
     def _get(self, url, tries=3):
-        # Preferred path: use the already-authenticated session
-        try:
-            return self._do(url, tries=tries)
-        except Exception as first_err:
-            # Failover: retry across all proxies (re-auth per proxy path)
-            last = first_err
-            for prox in self.attempts:
+        """GET through the active proxy chain. Uses the live `self.session` that
+        successfully completed the handshake first (so cookies like __cflb,
+        PHPSESSID, token stay bound to the right domain/path). If that session
+        fails 401/403 or raises, re-handshakes and falls back to trying each
+        proxy in self.attempts with a fresh session.
+
+        Stalker portals return the literal string 'Authorization failed.'
+        (HTTP 200 text/html) whenever either the `Authorization: Bearer <token>`
+        header OR the `token` cookie is missing/stale/wrong-domain.
+        """
+        last = None
+        # ------- 1) Try the live handshake session first (fast path) -------
+        live = getattr(self, "session", None)
+        if live is not None:
+            # Ensure Authorization + token cookie are attached on the live session
+            # (in case they were dropped by a redirect or previous error).
+            try:
+                live.cookies.set("token", self.token, path="/", domain=self.host)
+            except Exception:
+                try: live.cookies.set("token", self.token, path="/")
+                except Exception: pass
+            if getattr(self, "token", None):
+                live.headers["Authorization"] = f"Bearer {self.token}"
+            for i in range(tries):
                 try:
-                    s = self._newsess(prox)
+                    r = live.get(url, timeout=TIMEOUT)
+                    if r.status_code == 200:
+                        # Detect soft-fail "Authorization failed." body (200 text/html)
+                        if (r.headers.get("content-type","").startswith("text/")
+                                and "Authorization failed" in r.text[:200]):
+                            # force re-handshake
+                            if i == 0:
+                                self._handshake()
+                                live = self.session
+                                continue
+                            break
+                        try:
+                            return r.json()
+                        except Exception:
+                            return r
+                    if r.status_code in (401, 403):
+                        if i == 0:
+                            try:
+                                self._handshake()
+                                live = self.session
+                                continue
+                            except Exception:
+                                pass
+                        break
+                except Exception as e:
+                    last = e; time.sleep(0.3*(i+1))
+
+        # ------- 2) Fall back to iterating each proxy with a fresh session -------
+        for prox in self.attempts:
+            s = self._newsess(prox)
+            s.headers.update(self.auth_headers)
+            s.cookies.update(self.auth_cookies)
+            # Bind token cookie to portal domain explicitly (simple update() won't
+            # set domain/path which causes cookies to not attach cross-scheme on
+            # some requests).
+            try:
+                s.cookies.set("token", self.token, path="/", domain=self.host)
+            except Exception:
+                try: s.cookies.set("token", self.token, path="/")
+                except Exception: pass
+            if getattr(self, "token", None):
+                s.headers["Authorization"] = f"Bearer {self.token}"
+            for i in range(tries):
+                try:
                     r = s.get(url, timeout=TIMEOUT)
                     if r.status_code == 200:
-                        try: return r.json()
-                        except Exception: return r
+                        if (r.headers.get("content-type","").startswith("text/")
+                                and "Authorization failed" in r.text[:200]):
+                            if i == 0:
+                                try:
+                                    self._handshake()
+                                    s = self._newsess(prox)
+                                    s.headers.update(self.auth_headers)
+                                    s.cookies.update(self.auth_cookies)
+                                    try: s.cookies.set("token", self.token, path="/", domain=self.host)
+                                    except Exception: s.cookies.set("token", self.token, path="/")
+                                    if getattr(self, "token", None):
+                                        s.headers["Authorization"] = f"Bearer {self.token}"
+                                    continue
+                                except Exception:
+                                    pass
+                            break
+                        try:
+                            return r.json()
+                        except Exception:
+                            return r
+                    if r.status_code in (401, 403):
+                        if i == 0:
+                            try:
+                                self._handshake()
+                                s = self._newsess(prox)
+                                s.headers.update(self.auth_headers)
+                                s.cookies.update(self.auth_cookies)
+                                try: s.cookies.set("token", self.token, path="/", domain=self.host)
+                                except Exception: s.cookies.set("token", self.token, path="/")
+                                if getattr(self, "token", None):
+                                    s.headers["Authorization"] = f"Bearer {self.token}"
+                                continue
+                            except Exception:
+                                pass
+                        break
                 except Exception as e:
-                    last = e; time.sleep(0.3)
-            raise ConnectionError(f"All connection attempts failed for {url}: {last}")
+                    last = e; time.sleep(0.3*(i+1))
+        raise ConnectionError(f"All connection attempts failed for {url}: {last}")
 
     def _handshake(self):
         self.token = self.tr = None
@@ -463,6 +530,20 @@ class StalkerClient:
                 if not js.get("token"): continue
                 self.token = js["token"]; self.tr = js.get("random")
                 self.active_proxy = prox
+                # 🔑 CRITICAL: the `token` cookie must be set BEFORE the get_profile second
+                # step, and it must be bound to the portal domain/path. Ministra/Stalker
+                # checks BOTH the Authorization: Bearer header AND the `token` cookie on
+                # every subsequent get_genres/get_ordered_list/create_link call — missing
+                # the cookie (or setting it after get_profile) results in "Authorization
+                # failed." text/html responses on every later request.
+                s.cookies.update(self.cookies)
+                # Bind token cookie to portal domain + stalker_portal path (where load.php lives)
+                # Setting both domain-wide and path-wide maximizes compatibility across
+                # endpoint layouts (/stalker_portal/... vs /c/...).
+                try:
+                    s.cookies.set("token", self.token, path="/", domain=self.host)
+                except Exception:
+                    s.cookies.set("token", self.token, path="/")
                 # second-step
                 if self.tr:
                     sig = hashlib.sha256(self.tr.encode()).hexdigest().upper()
@@ -472,21 +553,42 @@ class StalkerClient:
                     s.headers.update({**self.base_headers,
                                       "Authorization": f"Bearer {self.token}",
                                       "X-Random": str(self.tr)})
-                    s.cookies.update(self.cookies)
+                    # Use the image version string the portal actually reports back when
+                    # possible; tatatv.cc responds with 5.1.0 profile not 5.6.10. Fall back
+                    # to the detected version if profile fetch fails.
+                    img_ver = self.portal_version
                     purl = (f"{self.base_url}{self.endpoint}?type=stb&action=get_profile&hd=1"
-                            f"&ver=ImageDescription: 0.2.18-r23-250; ImageDate: Wed Aug 29 10:49:53 EEST 2018; "
-                            f"PORTAL version: {self.portal_version}; API Version: JS API version: 343; "
-                            f"STB API version: 146; Player Engine version: 0x58c&num_banks=2&sn={self.sn}"
+                            f"&ver=ImageDescription: 0.2.18-r14-pub-270; ImageDate: Fri Jan 15 15:20:44 EET 2016; "
+                            f"PORTAL version: {img_ver}; API Version: JS API version: 328; "
+                            f"STB API version: 134; Player Engine version: 0x566&num_banks=2&sn={self.sn}"
                             f"&stb_type=MAG250&client_type=STB&image_version=218&video_out=hdmi"
                             f"&device_id={self.did2}&device_id2={self.did2}&sig={sig}"
                             f"&auth_second_step=1&hw_version=1.7-BD-00&not_valid_token=0"
                             f"&metrics={enc}&hw_version_2={self.hv2}"
                             f"&timestamp={round(time.time())}&api_sig=262&prehash=0")
-                    s.get(purl, timeout=TIMEOUT)
+                    rp = s.get(purl, timeout=TIMEOUT)
+                    # Update detected portal version from the profile response if present
+                    try:
+                        pj = rp.json().get("js", {}) if rp.headers.get("content-type","").startswith("application/json") else {}
+                        vstr = pj.get("version","") or ""
+                        m = re.search(r"PORTAL version:\s*([\d.]+)", vstr)
+                        if m: self.portal_version = m.group(1)
+                    except Exception:
+                        pass
+                # Re-assert token cookie post-get_profile (server may re-issue or we want to
+                # guarantee it's present for follow-up requests).
+                try:
+                    s.cookies.set("token", self.token, path="/", domain=self.host)
+                except Exception:
+                    s.cookies.set("token", self.token, path="/")
                 self.session = s
-                self.auth_cookies = dict(s.cookies); self.auth_cookies.update(self.cookies)
+                self.auth_cookies = dict(s.cookies)
+                self.auth_cookies.update(self.cookies)
                 self.auth_cookies["token"] = self.token
                 self.auth_headers = dict(s.headers)
+                # Ministra expects the Bearer token on all subsequent calls; keep it set
+                self.auth_headers["Authorization"] = f"Bearer {self.token}"
+                self.auth_headers["X-Random"] = str(self.tr or "")
                 print(f"[{self.name}] ✅ auth via {prox or 'DIRECT'} endpoint={self.endpoint} v={self.portal_version}")
                 return
             except Exception as e:
@@ -508,22 +610,42 @@ class StalkerClient:
         return j.get("js",{}) if isinstance(j,dict) else {}
 
     def channels(self, gid, progress=None):
-        js0 = self._page(gid, 0)
-        total = int(js0.get("total_items",0))
-        d0 = js0.get("data",[]) or []
-        ipp = int(js0.get("max_page_items") or 0) or max(len(d0),1)
-        pages = (total+ipp-1)//ipp if total else 1
-        allc = list(d0)
-        self._prime_cmd_cache(d0)
-        if callable(progress): progress(1,pages)
-        for p in range(1, pages):
+        # Ministra/Stalker uses 1-BASED pages (cur_page returned in response; p=1 is the
+        # first page). Older code used p=0 which sometimes returned data too but also
+        # produced duplicate pages. We probe p=1 first, then walk subsequent pages until
+        # we've collected `total_items` unique channels OR a page returns <ipp items.
+        js1 = self._page(gid, 1)
+        total = int(js1.get("total_items",0) or 0)
+        d1 = js1.get("data",[]) or []
+        ipp = int(js1.get("max_page_items") or 0) or max(len(d1),1)
+        pages = max(1, (total+ipp-1)//ipp) if total else 1
+        allc = list(d1)
+        self._prime_cmd_cache(d1)
+        if callable(progress): progress(1, pages)
+        seen_ids = {str(ch.get("id")) for ch in d1 if ch.get("id")}
+        p = 2
+        while len(allc) < total and p <= pages + 2:
             try:
-                data = self._page(gid,p).get("data",[]) or []
-                self._prime_cmd_cache(data)
-                for ch in data: allc.append(ch)
+                data = self._page(gid, p).get("data",[]) or []
             except Exception as e:
                 print(f"[{self.name}] page {p} of genre {gid} failed: {e}")
-            if callable(progress): progress(p+1,pages)
+                break
+            if not data:
+                break
+            added = 0
+            for ch in data:
+                cid = str(ch.get("id") or "")
+                if cid and cid not in seen_ids:
+                    seen_ids.add(cid); allc.append(ch); added += 1
+            self._prime_cmd_cache(data)
+            if callable(progress): progress(min(p, pages), pages)
+            # Stop if this page returned fewer items than a full page (last page)
+            if len(data) < ipp:
+                break
+            # Safety: if a page returned no new items, we've looped
+            if added == 0:
+                break
+            p += 1
         uniq={}
         for ch in allc:
             cid = str(ch.get("id") or "")
@@ -544,19 +666,21 @@ class StalkerClient:
         if not hasattr(self, "_cmd_cache"): self._cmd_cache = {}
         cid = str(ch_id)
         if cid in self._cmd_cache: return self._cmd_cache[cid]
-        # Lazy scan all genres once to build ch.id -> cmd.id map
+        # Lazy scan all genres once to build ch.id -> cmd.id map (1-based pages)
         try:
             for g in self.genres():
                 if g["id"] == "*": continue
                 try:
-                    js0 = self._page(g["id"], 0)
-                    total = int(js0.get("total_items",0))
-                    ipp = int(js0.get("max_page_items") or 0) or max(len(js0.get("data",[]) or []),1)
-                    pages = (total+ipp-1)//ipp if total else 1
-                    self._prime_cmd_cache(js0.get("data",[]))
-                    for p in range(1, pages):
+                    js1 = self._page(g["id"], 1)
+                    total = int(js1.get("total_items",0) or 0)
+                    d1 = js1.get("data",[]) or []
+                    ipp = int(js1.get("max_page_items") or 0) or max(len(d1),1)
+                    pages = max(1,(total+ipp-1)//ipp) if total else 1
+                    self._prime_cmd_cache(d1)
+                    for p in range(2, pages+1):
                         data = self._page(g["id"],p).get("data",[]) or []
                         self._prime_cmd_cache(data)
+                        if not data or len(data) < ipp: break
                 except Exception:
                     pass
                 if cid in self._cmd_cache: break
@@ -626,7 +750,8 @@ def extinf(ch, group, url):
     if ch.get("logo"): attrs.append(f'tvg-logo="{esc(ch["logo"])}"')
     if ch.get("group"): attrs.append(f'group-title="{esc(ch["group"])}"')
     attrs.append('catchup="flussonic"')
-    attrs.append(f'catchup-source="{esc(url.rsplit("/",1)[0])}/"')
+    # catchup-source needs channel-id in path for flussonic/ministra timeshift
+    attrs.append(f'catchup-source="{esc(url.rstrip("/"))}/"')
     n = esc(ch.get("name","Channel")) or "Channel"
     return f"#EXTINF:-1 {' '.join(attrs)},{n}\n{esc(url)}\n"
 
@@ -724,7 +849,8 @@ def write_m3u(path, title, channels, epg_urls=None, group=None, extra=None):
             if ch.get("logo"): attrs.append(f'tvg-logo="{esc(ch["logo"])}"')
             if g: attrs.append(f'group-title="{esc(g)}"')
             attrs.append('catchup="flussonic"')
-            attrs.append(f'catchup-source="{esc(u.rsplit("/",1)[0])}/"')
+            # catchup-source needs channel-id in path (TiviMate appends ?utc=...&duration=...)
+            attrs.append(f'catchup-source="{esc(u.rstrip("/"))}/"')
             n = esc(ch.get("name","Channel")) or "Channel"
             f.write(f"#EXTINF:-1 {' '.join(attrs)},{n}\n{u}\n")
 
@@ -763,12 +889,15 @@ def process_portal(cfg, epg, aliases):
         ku = k.strip().upper() if isinstance(k,str) else str(k).strip().upper()
         if ku and ku not in allow_kw:
             allow_kw.append(ku)
-    # Always keep special "*" (All) pseudo-genre — its contents will be re-filtered below
+    # Always keep special "*" (All) pseudo-genre — but only include it when NOT in
+    # strict-allowlist mode. In allowlist mode "*" re-lists the entire portal (thousands
+    # of channels we explicitly filtered out), which wastes bandwidth and produces a
+    # massive all.m3u8 that doesn't match the requested whitelist. Instead we'll build
+    # the "All" playlist ourselves by union of kept genres.
     star_g = next((g for g in genres if g.get("id") == "*"), None)
     if allow_kw:
         before = len(genres)
         genres = [g for g in genres if _genre_allowed(g.get("title",""), allow_kw)]
-        if star_g and star_g not in genres: genres.insert(0, star_g)
         print(f"[{pname}] ✅ allowlist: {before} → {len(genres)} genres (only: {allow_kw})")
     elif _GENRE_BLOCK_KW:
         before = len(genres)

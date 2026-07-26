@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.git/
+.github/
+*.md
+playlists/
+m3u/
+.env
+.vscode/
+.idea/
