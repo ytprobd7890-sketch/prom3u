@@ -2,7 +2,6 @@ name: Refresh TataTV IPTV
 
 on:
   schedule:
-    - cron: "0 */6 * * *"      # প্রতি ৬ ঘণ্টায়
   workflow_dispatch:            # ম্যানুয়াল রান
   push:
     branches: [main]
