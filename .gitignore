@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+# Generated outputs are committed by Actions; locally generated okay
+config.local.json
