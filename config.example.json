@@ -1,0 +1,37 @@
+{
+  "portals": [
+    {
+      "name": "tatatv",
+      "url": "http://tatatv.cc/stalker_portal/c/",
+      "mac": "00:1A:79:00:8C:32",
+      "proxy": "socks5h://test:test@203.96.226.98:1088",
+      "epg_id_prefix": "in."
+    }
+  ],
+  "epg_sources": [
+    "https://epg.pw/xmltv/epg_in.xml.gz"
+  ],
+  "favorites": {
+    "Bangla_Trending": [
+      "ZEE BANGLA 4K",
+      "STAR JALSHA HD",
+      "COLORS BANGLA HD",
+      "AAKAASH AATH",
+      "SONY AATH",
+      "BANGLA TOP 10",
+      "BANGLA - TV"
+    ],
+    "Sports": [
+      "STAR SPORTS 1 HD",
+      "STAR SPORTS SELECT 1",
+      "SONY SPORTS TEN 1",
+      "SPORTS - CRICKET"
+    ]
+  },
+  "output": {
+    "vlc_m3u": true,
+    "m3u8_hls": true,
+    "json_metadata": true,
+    "index_html": true
+  }
+}
